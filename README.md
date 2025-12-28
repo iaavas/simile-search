@@ -1,5 +1,5 @@
-<div align="center">
-  <img src="assets/logo.jpeg" alt="Simile Logo" width="200">
+<div>
+  <img src="assets/logo.svg" alt="Simile Logo" width="200">
 </div>
 
 # Simile 🔍
