@@ -44,10 +44,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "github.com/iaavas/simile-search"
+    "url": "https://github.com/iaavas/simile-search.git"
   },
   "bugs": {
-    "url": "github.com/iaavas/simile-search/issues"
+    "url": "https://github.com/iaavas/simile-search/issues"
   },
-  "homepage": "github.com/iaavas/simile-search"
+  "homepage": "https://github.com/iaavas/simile-search"
 }
