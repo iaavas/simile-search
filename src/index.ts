@@ -4,3 +4,7 @@ export { cosine, fuzzyScore, keywordScore, calculateScoreStats } from "./similar
 export { hybridScore, getDefaultWeights } from "./ranker.js";
 export { Simile } from "./engine.js";
 export { getByPath, extractText, normalizeScore } from "./utils.js";
+export { HNSWIndex } from "./ann.js";
+export { VectorCache, createCacheKey } from "./cache.js";
+export { BackgroundUpdater, DebouncedUpdater, PriorityUpdater } from "./updater.js";
+export { quantizeVector, dequantizeVector, cosineQuantized, quantizedToBase64, base64ToQuantized } from "./quantization.js";

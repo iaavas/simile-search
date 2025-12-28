@@ -1,3 +1,10 @@
+import { HNSWConfig } from "./ann.js";
+import { CacheOptions, CacheStats } from "./cache.js";
+import { QuantizationType } from "./quantization.js";
+import { UpdaterConfig } from "./updater.js";
+
+export { HNSWConfig, CacheOptions, CacheStats, QuantizationType, UpdaterConfig };
+
 export interface SearchItem<T = any> {
   id: string;
   text: string;
@@ -30,6 +37,10 @@ export interface SearchOptions {
   threshold?: number;
   /** Minimum query length to trigger search (default: 1) */
   minLength?: number;
+  /** Use fast similarity computation (default: true for large datasets) */
+  useFastSimilarity?: boolean;
+  /** Use ANN index if available (default: true) */
+  useANN?: boolean;
 }
 
 export interface HybridWeights {
@@ -40,6 +51,16 @@ export interface HybridWeights {
   /** Keyword match weight (0-1), default: 0.15 */
   keyword?: number;
 }
+
+// Types moved to respective modules
+
+// Types moved to respective modules
+
+// Types moved to respective modules
+
+// Types moved to respective modules
+
+// ============ Simile Config Types ============
 
 export interface SimileConfig {
   /** Custom hybrid scoring weights */
@@ -54,6 +75,14 @@ export interface SimileConfig {
   textPaths?: string[];
   /** Whether to normalize scores across different scoring methods (default: true) */
   normalizeScores?: boolean;
+  /** Enable vector caching (default: true) */
+  cache?: boolean | CacheOptions;
+  /** Vector quantization type (default: 'float32') */
+  quantization?: QuantizationType;
+  /** Enable ANN index for large datasets (default: auto based on size) */
+  useANN?: boolean | HNSWConfig;
+  /** Minimum items to automatically enable ANN (default: 1000) */
+  annThreshold?: number;
 }
 
 /** Serialized state for persistence */
@@ -66,4 +95,23 @@ export interface SimileSnapshot<T = any> {
   createdAt: string;
   /** Text paths used for extraction */
   textPaths?: string[];
+  /** Quantization type used */
+  quantization?: QuantizationType;
+  /** Serialized ANN index */
+  annIndex?: any;
+  /** Serialized cache */
+  cache?: any;
+}
+
+// ============ Index Info Types ============
+
+export interface IndexInfo {
+  type: 'linear' | 'hnsw';
+  size: number;
+  memory: string;
+  annStats?: {
+    levels: number;
+    avgConnections: number;
+  };
+  cacheStats?: CacheStats;
 }

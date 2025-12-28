@@ -216,7 +216,7 @@ describe("simile persistence", () => {
     const engine = await Simile.from(testItems);
     const snapshot = engine.save();
 
-    expect(snapshot.version).toBe("0.2.0");
+    expect(snapshot.version).toBe("0.4.0");
     expect(snapshot.items.length).toBe(5);
     expect(snapshot.vectors.length).toBe(5);
     expect(snapshot.model).toBe("Xenova/all-MiniLM-L6-v2");

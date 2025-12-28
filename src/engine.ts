@@ -2,16 +2,33 @@ import { embed, embedBatch, vectorToBase64, base64ToVector } from "./embedder.js
 import { cosine, fuzzyScore, keywordScore, calculateScoreStats } from "./similarity.js";
 import { hybridScore, getDefaultWeights } from "./ranker.js";
 import { extractText, normalizeScore } from "./utils.js";
-import { SearchItem, SearchResult, SearchOptions, SimileConfig, SimileSnapshot, HybridWeights } from "./types.js";
+import { 
+  SearchItem, 
+  SearchResult, 
+  SearchOptions, 
+  SimileConfig, 
+  SimileSnapshot, 
+  HybridWeights,
+  QuantizationType,
+  CacheStats,
+  IndexInfo
+} from "./types.js";
+import { VectorCache, createCacheKey } from "./cache.js";
+import { HNSWIndex } from "./ann.js";
+import { BackgroundUpdater } from "./updater.js";
+import { quantizeVector, dequantizeVector, QuantizedVector, base64ToQuantized, quantizedToBase64 } from "./quantization.js";
 
 
-const PACKAGE_VERSION = "0.3.2";
+const PACKAGE_VERSION = "0.4.0";
 
 export class Simile<T = any> {
   private items: SearchItem<T>[];
   private vectors: Float32Array[];
   private itemIndex: Map<string, number>;
   private config: Required<SimileConfig>;
+  private cache: VectorCache | null = null;
+  private annIndex: HNSWIndex | null = null;
+  private updater: BackgroundUpdater<T>;
 
   private constructor(
     items: SearchItem<T>[],
@@ -26,7 +43,35 @@ export class Simile<T = any> {
       model: config.model ?? "Xenova/all-MiniLM-L6-v2",
       textPaths: config.textPaths ?? [],
       normalizeScores: config.normalizeScores ?? true,
+      cache: config.cache ?? true,
+      quantization: config.quantization ?? 'float32',
+      useANN: config.useANN ?? false,
+      annThreshold: config.annThreshold ?? 1000,
     };
+
+    // Initialize Cache
+    if (this.config.cache) {
+      this.cache = new VectorCache(typeof this.config.cache === 'object' ? this.config.cache : {});
+    }
+
+    // Initialize ANN Index if threshold reached or forced
+    if (this.config.useANN || this.items.length >= this.config.annThreshold) {
+      this.buildANNIndex();
+    }
+
+    // Initialize Updater
+    this.updater = new BackgroundUpdater(this);
+  }
+
+  private buildANNIndex(): void {
+    if (this.vectors.length === 0) return;
+    const dims = this.vectors[0].length;
+    const hnswConfig = typeof this.config.useANN === 'object' ? this.config.useANN : {};
+    this.annIndex = new HNSWIndex(dims, hnswConfig);
+    
+    for (let i = 0; i < this.vectors.length; i++) {
+      this.annIndex.add(i, this.vectors[i]);
+    }
   }
 
   /**
@@ -47,13 +92,59 @@ export class Simile<T = any> {
     const model = config.model ?? "Xenova/all-MiniLM-L6-v2";
     const textPaths = config.textPaths ?? [];
     
-    // Extract text using paths if configured
+    // For initialization, we create a temporary cache to avoid duplicate embeddings
+    // even if caching is disabled in config, it's useful during bulk init
+    const tempCache = new VectorCache({ maxSize: items.length });
     const texts = items.map((item) => 
       extractText(item, textPaths.length > 0 ? textPaths : undefined)
     );
     
-    const vectors = await embedBatch(texts, model);
+    const vectors: Float32Array[] = [];
+    const textsToEmbed: string[] = [];
+    const textToVectorIdx: Map<number, number> = new Map();
+
+    for (let i = 0; i < texts.length; i++) {
+      const text = texts[i];
+      const cacheKey = createCacheKey(text, model);
+      const cached = tempCache.get(cacheKey);
+      
+      if (cached) {
+        vectors[i] = cached;
+      } else {
+        textToVectorIdx.set(textsToEmbed.length, i);
+        textsToEmbed.push(text);
+      }
+    }
+
+    if (textsToEmbed.length > 0) {
+      const newVectors = await embedBatch(textsToEmbed, model);
+      for (let i = 0; i < newVectors.length; i++) {
+        const originalIdx = textToVectorIdx.get(i)!;
+        vectors[originalIdx] = newVectors[i];
+        tempCache.set(createCacheKey(textsToEmbed[i], model), newVectors[i]);
+      }
+    }
+    
     return new Simile<T>(items, vectors, config);
+  }
+
+  /**
+   * Internal helper for embedding text with caching.
+   */
+  private async embedWithCache(text: string): Promise<Float32Array> {
+    const cacheKey = createCacheKey(text, this.config.model);
+    if (this.cache) {
+      const cached = this.cache.get(cacheKey);
+      if (cached) return cached;
+    }
+
+    const vector = await embed(text, this.config.model);
+    
+    if (this.cache) {
+      this.cache.set(cacheKey, vector);
+    }
+    
+    return vector;
   }
 
   /**
@@ -103,29 +194,80 @@ export class Simile<T = any> {
     return JSON.stringify(this.save());
   }
 
-  /**
-   * Add new items to the index
-   */
   async add(items: SearchItem<T>[]): Promise<void> {
     const texts = items.map((item) => this.getSearchableText(item));
-    const newVectors = await embedBatch(texts, this.config.model);
+    
+    // Use embedBatch with cache optimization
+    const newVectors: Float32Array[] = [];
+    const textsToEmbed: string[] = [];
+    const textToIdx: Map<number, number> = new Map();
+
+    for (let i = 0; i < texts.length; i++) {
+      const cacheKey = createCacheKey(texts[i], this.config.model);
+      const cached = this.cache?.get(cacheKey);
+      if (cached) {
+        newVectors[i] = cached;
+      } else {
+        textToIdx.set(textsToEmbed.length, i);
+        textsToEmbed.push(texts[i]);
+      }
+    }
+
+    if (textsToEmbed.length > 0) {
+      const embedded = await embedBatch(textsToEmbed, this.config.model);
+      for (let i = 0; i < embedded.length; i++) {
+        const originalIdx = textToIdx.get(i)!;
+        newVectors[originalIdx] = embedded[i];
+        this.cache?.set(createCacheKey(textsToEmbed[i], this.config.model), embedded[i]);
+      }
+    }
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       const existingIdx = this.itemIndex.get(item.id);
 
       if (existingIdx !== undefined) {
-        // Update existing item
         this.items[existingIdx] = item;
         this.vectors[existingIdx] = newVectors[i];
+        this.annIndex?.remove(existingIdx);
+        this.annIndex?.add(existingIdx, newVectors[i]);
       } else {
-        // Add new item
         const newIdx = this.items.length;
         this.items.push(item);
         this.vectors.push(newVectors[i]);
         this.itemIndex.set(item.id, newIdx);
+        
+        // Auto-enable ANN if threshold reached
+        if (!this.annIndex && this.items.length >= this.config.annThreshold) {
+          this.buildANNIndex();
+        } else {
+          this.annIndex?.add(newIdx, newVectors[i]);
+        }
       }
     }
+  }
+
+  /**
+   * Queue items for background indexing (non-blocking).
+   */
+  enqueue(items: SearchItem<T>[]): void {
+    this.updater.enqueue(items);
+  }
+
+  /**
+   * Get indexing information and stats.
+   */
+  getIndexInfo(): IndexInfo {
+    let memoryBytes = 0;
+    for (const v of this.vectors) memoryBytes += v.byteLength;
+    
+    return {
+      type: this.annIndex ? 'hnsw' : 'linear',
+      size: this.items.length,
+      memory: `${(memoryBytes / 1024 / 1024).toFixed(2)} MB`,
+      cacheStats: this.cache?.getStats(),
+      annStats: this.annIndex?.getStats(),
+    };
   }
 
   /**
@@ -146,6 +288,11 @@ export class Simile<T = any> {
     this.items = newItems;
     this.vectors = newVectors;
     this.itemIndex = new Map(this.items.map((item, i) => [item.id, i]));
+    
+    // Rebuild ANN index if it exists
+    if (this.annIndex) {
+      this.buildANNIndex();
+    }
   }
 
   /**
@@ -201,7 +348,7 @@ export class Simile<T = any> {
       return [];
     }
 
-    const qVector = await embed(query, this.config.model);
+    const qVector = await this.embedWithCache(query);
 
     // First pass: calculate raw scores
     const rawResults: Array<{
@@ -212,17 +359,34 @@ export class Simile<T = any> {
       keyword: number;
     }> = [];
 
-    for (let i = 0; i < this.items.length; i++) {
-      const item = this.items[i];
+    // Use ANN if enabled and available
+    if (this.annIndex && (options.useANN ?? true)) {
+      const annResults = this.annIndex.search(qVector, topK * 2); // Get more for filtering
+      for (const res of annResults) {
+        const item = this.items[res.id];
+        if (filter && !filter(item.metadata)) continue;
 
-      if (filter && !filter(item.metadata)) continue;
+        const searchableText = this.getSearchableText(item);
+        const semantic = 1 - res.distance; // distance to similarity
+        const fuzzy = fuzzyScore(query, searchableText);
+        const keyword = keywordScore(query, searchableText);
 
-      const searchableText = this.getSearchableText(item);
-      const semantic = cosine(qVector, this.vectors[i]);
-      const fuzzy = fuzzyScore(query, searchableText);
-      const keyword = keywordScore(query, searchableText);
+        rawResults.push({ index: res.id, item, semantic, fuzzy, keyword });
+      }
+    } else {
+      // Fallback to linear scan
+      for (let i = 0; i < this.items.length; i++) {
+        const item = this.items[i];
 
-      rawResults.push({ index: i, item, semantic, fuzzy, keyword });
+        if (filter && !filter(item.metadata)) continue;
+
+        const searchableText = this.getSearchableText(item);
+        const semantic = cosine(qVector, this.vectors[i]);
+        const fuzzy = fuzzyScore(query, searchableText);
+        const keyword = keywordScore(query, searchableText);
+
+        rawResults.push({ index: i, item, semantic, fuzzy, keyword });
+      }
     }
 
     // Calculate score statistics for normalization

@@ -17,8 +17,11 @@ Simile combines the power of AI embeddings with fuzzy string matching and keywor
 - 🧠 **Semantic Search** - Understands meaning, not just keywords ("phone charger" finds "USB-C cable")
 - 🔤 **Fuzzy Matching** - Handles typos and partial matches gracefully
 - 🎯 **Keyword Boost** - Exact matches get priority
+- ⚡ **O(log n) Search** - Built-in HNSW index for lightning-fast search on large datasets (10k+ items)
+- 📉 **Quantization** - Reduce memory usage by up to 75% with `float16` and `int8` support
+- 🚀 **Vector Cache** - LRU caching to avoid redundant embedding of duplicate text
+- 🔄 **Non-blocking Updates** - Asynchronous background indexing keeps your app responsive
 - 💾 **Persistence** - Save/load embeddings to avoid re-computing
-- ⚡ **Batch Processing** - Optimized for large catalogs
 - 🔧 **Configurable** - Tune scoring weights for your use case
 - 📦 **Zero API Calls** - Everything runs locally with Transformers.js
 - 🔗 **Nested Path Search** - Search `author.firstName` instead of flat strings
@@ -365,6 +368,21 @@ interface SimileConfig {
   model?: string;
   textPaths?: string[];       // Paths for nested object search
   normalizeScores?: boolean;  // Enable score normalization (default: true)
+  cache?: boolean | CacheOptions;
+  quantization?: 'float32' | 'float16' | 'int8';
+  useANN?: boolean | HNSWConfig;
+  annThreshold?: number;
+}
+
+interface CacheOptions {
+  maxSize?: number;
+  enableStats?: boolean;
+}
+
+interface HNSWConfig {
+  M?: number;
+  efConstruction?: number;
+  efSearch?: number;
 }
 ```
 
@@ -376,7 +394,62 @@ Simile uses [Xenova/all-MiniLM-L6-v2](https://huggingface.co/Xenova/all-MiniLM-L
 
 MIT © [Aavash Baral](https://github.com/iaavas)
 
+## ⚡ Performance Optimization
+
+Simile v0.4.0 introduces several features to handle large scale datasets (10k-100k+ items) efficiently.
+
+### 📉 Quantization
+
+Reduce memory footprint by representing vectors with lower precision.
+
+```typescript
+const engine = await Simile.from(items, {
+  quantization: 'float16', // 50% memory reduction, minimal accuracy loss
+  // OR
+  quantization: 'int8',    // 75% memory reduction, slight accuracy loss
+});
+```
+
+### ⚡ O(log n) Search (ANN)
+
+For datasets larger than 1,000 items, Simile automatically builds an HNSW (Hierarchical Navigable Small World) index for near-instant search.
+
+```typescript
+const engine = await Simile.from(items, {
+  useANN: true, // Force enable ANN
+  annThreshold: 500, // Enable ANN if items > 500 (default: 1000)
+});
+```
+
+### 🚀 Vector Caching
+
+Avoid redundant AI embedding calls for duplicate texts with built-in LRU caching.
+
+```typescript
+const engine = await Simile.from(items, {
+  cache: {
+    maxSize: 5000, // Cache up to 5000 unique embeddings
+    enableStats: true,
+  }
+});
+
+// Check cache performance
+const stats = engine.getIndexInfo().cacheStats;
+console.log(`Cache Hit Rate: ${stats.hitRate}%`);
+```
+
+### 🔄 Non-blocking Background Updates
+
+Adding items to a large index can be expensive. Simile uses an internal queue to process updates in the background without blocking search.
+
+```typescript
+// These return immediately/nearly immediately and process in batches
+engine.add(newItems);
+engine.add(moreItems);
+```
+
 ---
+
 
 <p align="center">
   Made with ❤️ by <a href="https://github.com/iaavas">Aavash Baral</a>
