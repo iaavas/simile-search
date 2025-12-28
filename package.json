@@ -41,5 +41,13 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     }
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "github.com/iaavas/simile-search"
+  },
+  "bugs": {
+    "url": "github.com/iaavas/simile-search/issues"
+  },
+  "homepage": "github.com/iaavas/simile-search"
 }
