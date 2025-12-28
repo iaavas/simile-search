@@ -1,0 +1,49 @@
+# Node modules
+node_modules/
+
+# Production build
+dist/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env and local config
+.env
+.env.*
+.local
+
+# VSCode settings
+.vscode/
+
+# Optional npm cache
+.npm/
+
+# Coverage reports
+coverage/
+
+# Compiled output
+*.js
+*.d.ts
+*.js.map
+
+# Test snapshots
+*.snap
+
+# Other lock files (in case of switching between npm/yarn/pnpm)
+yarn.lock
+pnpm-lock.yaml
+
