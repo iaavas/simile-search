@@ -64,7 +64,13 @@ export function extractText(item: any, paths?: string[]): string {
  * Normalize a score to a 0-1 range using min-max normalization.
  * Handles edge cases where min equals max.
  */
-export function normalizeScore(value: number, min: number, max: number): number {
-  if (max === min) return value > 0 ? 1 : 0;
-  return (value - min) / (max - min);
+export function normalizeScore(
+  value: number,
+  min: number,
+  max: number,
+  floorMax: number = 0
+): number {
+  const effectiveMax = Math.max(max, floorMax);
+  if (effectiveMax <= min) return value > 0 ? 1 : 0;
+  return Math.max(0, Math.min(1, (value - min) / (effectiveMax - min)));
 }
