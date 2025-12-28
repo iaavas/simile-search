@@ -1,6 +1,6 @@
 {
   "name": "simile-search",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Offline-first semantic + fuzzy search engine for catalogs, names, and products",
   "type": "module",
   "main": "dist/index.js",
