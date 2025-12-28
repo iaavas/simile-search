@@ -1,17 +1,11 @@
-import { embed, embedBatch, vectorToBase64, base64ToVector } from "./embedder";
-import { cosine, fuzzyScore, keywordScore, calculateScoreStats } from "./similarity";
-import { hybridScore, getDefaultWeights } from "./ranker";
-import { extractText, normalizeScore } from "./utils";
-import {
-  SearchItem,
-  SearchResult,
-  SearchOptions,
-  SimileConfig,
-  SimileSnapshot,
-  HybridWeights,
-} from "./types";
+import { embed, embedBatch, vectorToBase64, base64ToVector } from "./embedder.js";
+import { cosine, fuzzyScore, keywordScore, calculateScoreStats } from "./similarity.js";
+import { hybridScore, getDefaultWeights } from "./ranker.js";
+import { extractText, normalizeScore } from "./utils.js";
+import { SearchItem, SearchResult, SearchOptions, SimileConfig, SimileSnapshot, HybridWeights } from "./types.js";
 
-const PACKAGE_VERSION = "0.3.0";
+
+const PACKAGE_VERSION = "0.3.1";
 
 export class Simile<T = any> {
   private items: SearchItem<T>[];

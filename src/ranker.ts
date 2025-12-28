@@ -1,4 +1,4 @@
-import { HybridWeights } from "./types";
+import { HybridWeights } from "./types.js";
 
 const DEFAULT_WEIGHTS: Required<HybridWeights> = {
   semantic: 0.7,
