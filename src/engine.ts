@@ -1,6 +1,7 @@
 import { embed, embedBatch, vectorToBase64, base64ToVector } from "./embedder";
-import { cosine, fuzzyScore, keywordScore } from "./similarity";
+import { cosine, fuzzyScore, keywordScore, calculateScoreStats } from "./similarity";
 import { hybridScore, getDefaultWeights } from "./ranker";
+import { extractText, normalizeScore } from "./utils";
 import {
   SearchItem,
   SearchResult,
@@ -10,7 +11,7 @@ import {
   HybridWeights,
 } from "./types";
 
-const PACKAGE_VERSION = "0.2.0";
+const PACKAGE_VERSION = "0.3.0";
 
 export class Simile<T = any> {
   private items: SearchItem<T>[];
@@ -29,7 +30,16 @@ export class Simile<T = any> {
     this.config = {
       weights: config.weights ?? getDefaultWeights(),
       model: config.model ?? "Xenova/all-MiniLM-L6-v2",
+      textPaths: config.textPaths ?? [],
+      normalizeScores: config.normalizeScores ?? true,
     };
+  }
+
+  /**
+   * Extract searchable text from an item using configured paths.
+   */
+  private getSearchableText(item: SearchItem<T>): string {
+    return extractText(item, this.config.textPaths.length > 0 ? this.config.textPaths : undefined);
   }
 
   /**
@@ -41,7 +51,13 @@ export class Simile<T = any> {
     config: SimileConfig = {}
   ): Promise<Simile<T>> {
     const model = config.model ?? "Xenova/all-MiniLM-L6-v2";
-    const texts = items.map((item) => item.text);
+    const textPaths = config.textPaths ?? [];
+    
+    // Extract text using paths if configured
+    const texts = items.map((item) => 
+      extractText(item, textPaths.length > 0 ? textPaths : undefined)
+    );
+    
     const vectors = await embedBatch(texts, model);
     return new Simile<T>(items, vectors, config);
   }
@@ -55,7 +71,11 @@ export class Simile<T = any> {
     return new Simile<T>(
       snapshot.items,
       vectors,
-      { ...config, model: snapshot.model }
+      { 
+        ...config, 
+        model: snapshot.model,
+        textPaths: snapshot.textPaths ?? config.textPaths ?? [],
+      }
     );
   }
 
@@ -78,6 +98,7 @@ export class Simile<T = any> {
       items: this.items,
       vectors: this.vectors.map(vectorToBase64),
       createdAt: new Date().toISOString(),
+      textPaths: this.config.textPaths.length > 0 ? this.config.textPaths : undefined,
     };
   }
 
@@ -92,7 +113,7 @@ export class Simile<T = any> {
    * Add new items to the index
    */
   async add(items: SearchItem<T>[]): Promise<void> {
-    const texts = items.map((item) => item.text);
+    const texts = items.map((item) => this.getSearchableText(item));
     const newVectors = await embedBatch(texts, this.config.model);
 
     for (let i = 0; i < items.length; i++) {
@@ -163,7 +184,11 @@ export class Simile<T = any> {
   }
 
   /**
-   * Search for similar items
+   * Search for similar items.
+   * 
+   * @param query - The search query
+   * @param options - Search options
+   * @returns Sorted results by relevance (highest score first)
    */
   async search(
     query: string,
@@ -174,20 +199,55 @@ export class Simile<T = any> {
       explain = false,
       filter,
       threshold = 0,
+      minLength = 1,
     } = options;
+
+    // Min character limit - don't search until query meets minimum length
+    if (query.length < minLength) {
+      return [];
+    }
 
     const qVector = await embed(query, this.config.model);
 
-    const results: SearchResult<T>[] = [];
+    // First pass: calculate raw scores
+    const rawResults: Array<{
+      index: number;
+      item: SearchItem<T>;
+      semantic: number;
+      fuzzy: number;
+      keyword: number;
+    }> = [];
 
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
 
       if (filter && !filter(item.metadata)) continue;
 
+      const searchableText = this.getSearchableText(item);
       const semantic = cosine(qVector, this.vectors[i]);
-      const fuzzy = fuzzyScore(query, item.text);
-      const keyword = keywordScore(query, item.text);
+      const fuzzy = fuzzyScore(query, searchableText);
+      const keyword = keywordScore(query, searchableText);
+
+      rawResults.push({ index: i, item, semantic, fuzzy, keyword });
+    }
+
+    // Calculate score statistics for normalization
+    const stats = calculateScoreStats(rawResults);
+
+    // Second pass: normalize scores and compute hybrid score
+    const results: SearchResult<T>[] = [];
+
+    for (const raw of rawResults) {
+      let semantic = raw.semantic;
+      let fuzzy = raw.fuzzy;
+      let keyword = raw.keyword;
+
+      // Normalize scores if enabled
+      if (this.config.normalizeScores) {
+        semantic = normalizeScore(raw.semantic, stats.semantic.min, stats.semantic.max);
+        fuzzy = normalizeScore(raw.fuzzy, stats.fuzzy.min, stats.fuzzy.max);
+        keyword = normalizeScore(raw.keyword, stats.keyword.min, stats.keyword.max);
+      }
 
       const score = hybridScore(semantic, fuzzy, keyword, this.config.weights);
 
@@ -195,14 +255,26 @@ export class Simile<T = any> {
       if (score < threshold) continue;
 
       results.push({
-        id: item.id,
-        text: item.text,
-        metadata: item.metadata,
+        id: raw.item.id,
+        text: raw.item.text,
+        metadata: raw.item.metadata,
         score,
-        explain: explain ? { semantic, fuzzy, keyword } : undefined,
+        explain: explain
+          ? {
+              semantic,
+              fuzzy,
+              keyword,
+              raw: {
+                semantic: raw.semantic,
+                fuzzy: raw.fuzzy,
+                keyword: raw.keyword,
+              },
+            }
+          : undefined,
       });
     }
 
+    // Sort by relevance (highest score first)
     return results.sort((a, b) => b.score - a.score).slice(0, topK);
   }
 }

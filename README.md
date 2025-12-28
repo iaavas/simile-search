@@ -21,6 +21,9 @@ Simile combines the power of AI embeddings with fuzzy string matching and keywor
 - ⚡ **Batch Processing** - Optimized for large catalogs
 - 🔧 **Configurable** - Tune scoring weights for your use case
 - 📦 **Zero API Calls** - Everything runs locally with Transformers.js
+- 🔗 **Nested Path Search** - Search `author.firstName` instead of flat strings
+- 📊 **Score Normalization** - Consistent scoring across different methods
+- ✂️ **Min Character Limit** - Control when search triggers
 
 ## 📦 Installation
 
@@ -45,8 +48,8 @@ const engine = await Simile.from([
 const results = await engine.search('phone charger');
 console.log(results);
 // [
-//   { id: '3', text: 'iPhone Charger', score: 0.72, ... },
-//   { id: '4', text: 'USB-C phone charger cable', score: 0.68, ... },
+//   { id: '3', text: 'iPhone Charger', score: 0.92, ... },
+//   { id: '4', text: 'USB-C phone charger cable', score: 0.87, ... },
 //   ...
 // ]
 ```
@@ -81,11 +84,67 @@ const snapshot = engine.save();
 //   model: 'Xenova/all-MiniLM-L6-v2',
 //   items: [...],
 //   vectors: ['base64...', 'base64...'],
-//   createdAt: '2024-12-28T...'
+//   createdAt: '2024-12-28T...',
+//   textPaths: ['metadata.title', ...]  // if configured
 // }
 
 // Load from snapshot object
 const restored = Simile.load(snapshot);
+```
+
+## 🔗 Nested Path Search
+
+Search complex objects by specifying paths to extract text from:
+
+```typescript
+const books = [
+  {
+    id: '1',
+    text: '',  // Can be empty when using textPaths
+    metadata: {
+      author: { firstName: 'John', lastName: 'Doe' },
+      title: 'The Art of Programming',
+      tags: ['coding', 'javascript'],
+    },
+  },
+  {
+    id: '2',
+    text: '',
+    metadata: {
+      author: { firstName: 'Jane', lastName: 'Smith' },
+      title: 'Machine Learning Basics',
+      tags: ['ai', 'python'],
+    },
+  },
+];
+
+// Configure which paths to extract and search
+const engine = await Simile.from(books, {
+  textPaths: [
+    'metadata.author.firstName',
+    'metadata.author.lastName',
+    'metadata.title',
+    'metadata.tags',  // Arrays are joined with spaces
+  ],
+});
+
+// Now you can search by author name!
+const results = await engine.search('John programming');
+// Finds "The Art of Programming" by John Doe
+```
+
+### Supported Path Formats
+
+```typescript
+// Dot notation for nested objects
+'metadata.author.firstName'  // → "John"
+
+// Array index access
+'metadata.tags[0]'           // → "coding"
+'items[0].name'              // → nested array access
+
+// Arrays without index (joins all elements)
+'metadata.tags'              // → "coding javascript"
 ```
 
 ## 🔧 Configuration
@@ -107,6 +166,38 @@ const engine = await Simile.from(items, {
 engine.setWeights({ semantic: 0.9, fuzzy: 0.05, keyword: 0.05 });
 ```
 
+### Score Normalization
+
+By default, scores are normalized so that a "0.8" semantic score means the same as a "0.8" fuzzy score. This ensures fair comparison across different scoring methods.
+
+```typescript
+// Enabled by default
+const engine = await Simile.from(items, {
+  normalizeScores: true,  // default
+});
+
+// Disable if you want raw scores
+const rawEngine = await Simile.from(items, {
+  normalizeScores: false,
+});
+
+// With explain: true, you can see both normalized and raw scores
+const results = await engine.search('cleaner', { explain: true });
+// {
+//   score: 1.0,
+//   explain: {
+//     semantic: 1.0,    // normalized
+//     fuzzy: 1.0,       // normalized
+//     keyword: 1.0,     // normalized
+//     raw: {
+//       semantic: 0.62, // original score
+//       fuzzy: 0.32,    // original score
+//       keyword: 1.0,   // original score
+//     }
+//   }
+// }
+```
+
 ### Search Options
 
 ```typescript
@@ -115,16 +206,24 @@ const results = await engine.search('cleaner', {
   threshold: 0.5,     // Minimum score (default: 0)
   explain: true,      // Include score breakdown
   filter: (meta) => meta.category === 'Cleaning',  // Filter by metadata
+  minLength: 3,       // Don't search until 3+ characters typed (default: 1)
 });
-
-// With explain: true
-// {
-//   id: '1',
-//   text: 'Bathroom floor cleaner',
-//   score: 0.63,
-//   explain: { semantic: 0.62, fuzzy: 0.32, keyword: 1.0 }
-// }
 ```
+
+### Min Character Limit
+
+Prevent unnecessary searches on very short queries:
+
+```typescript
+// Don't trigger search until user types at least 3 characters
+const results = await engine.search('cl', { minLength: 3 });
+// Returns [] because query length (2) < minLength (3)
+
+const results2 = await engine.search('cle', { minLength: 3 });
+// Returns results because query length (3) >= minLength (3)
+```
+
+This is useful for autocomplete/typeahead UIs where you don't want to search on every keystroke.
 
 ## 📝 Dynamic Catalog Management
 
@@ -167,7 +266,11 @@ import {
   keywordScore,
   hybridScore,
   vectorToBase64,
-  base64ToVector 
+  base64ToVector,
+  getByPath,
+  extractText,
+  normalizeScore,
+  calculateScoreStats,
 } from 'simile-search';
 
 // Embed text directly
@@ -183,6 +286,10 @@ const keyword = keywordScore('phone charger', 'USB phone charger cable');
 
 // Combine scores
 const score = hybridScore(0.8, 0.6, 0.5, { semantic: 0.7, fuzzy: 0.15, keyword: 0.15 });
+
+// Extract nested values
+const firstName = getByPath(obj, 'author.firstName');
+const text = extractText(item, ['metadata.title', 'metadata.tags']);
 ```
 
 ## 📊 API Reference
@@ -197,7 +304,7 @@ Load from a saved snapshot (instant, no embedding).
 Load from JSON string.
 
 ### `engine.search(query, options?)`
-Search for similar items.
+Search for similar items. **Results are always sorted by relevance (highest score first).**
 
 ### `engine.save()`
 Export snapshot object for persistence.
@@ -237,19 +344,27 @@ interface SearchResult<T = any> {
   text: string;
   score: number;
   metadata?: T;
-  explain?: { semantic: number; fuzzy: number; keyword: number };
+  explain?: {
+    semantic: number;
+    fuzzy: number;
+    keyword: number;
+    raw?: { semantic: number; fuzzy: number; keyword: number };
+  };
 }
 
 interface SearchOptions {
   topK?: number;
   explain?: boolean;
   threshold?: number;
+  minLength?: number;  // Min query length to trigger search
   filter?: (metadata: any) => boolean;
 }
 
 interface SimileConfig {
   weights?: { semantic?: number; fuzzy?: number; keyword?: number };
   model?: string;
+  textPaths?: string[];       // Paths for nested object search
+  normalizeScores?: boolean;  // Enable score normalization (default: true)
 }
 ```
 
@@ -266,3 +381,4 @@ MIT © [Aavash Baral](https://github.com/iaavas)
 <p align="center">
   Made with ❤️ by <a href="https://github.com/iaavas">Aavash Baral</a>
 </p>
+

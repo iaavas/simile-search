@@ -13,6 +13,12 @@ export interface SearchResult<T = any> {
     semantic: number;
     fuzzy: number;
     keyword: number;
+    /** Raw scores before normalization */
+    raw?: {
+      semantic: number;
+      fuzzy: number;
+      keyword: number;
+    };
   };
 }
 
@@ -22,6 +28,8 @@ export interface SearchOptions {
   filter?: (metadata: any) => boolean;
   /** Minimum score threshold (0-1). Results below this are filtered out */
   threshold?: number;
+  /** Minimum query length to trigger search (default: 1) */
+  minLength?: number;
 }
 
 export interface HybridWeights {
@@ -38,6 +46,14 @@ export interface SimileConfig {
   weights?: HybridWeights;
   /** Model to use for embeddings (default: "Xenova/all-MiniLM-L6-v2") */
   model?: string;
+  /** 
+   * Paths to extract searchable text from items. 
+   * Supports nested paths like "author.firstName" or "tags[0]".
+   * If not provided, uses the 'text' field directly.
+   */
+  textPaths?: string[];
+  /** Whether to normalize scores across different scoring methods (default: true) */
+  normalizeScores?: boolean;
 }
 
 /** Serialized state for persistence */
@@ -48,4 +64,6 @@ export interface SimileSnapshot<T = any> {
   /** Base64-encoded Float32Array vectors */
   vectors: string[];
   createdAt: string;
+  /** Text paths used for extraction */
+  textPaths?: string[];
 }

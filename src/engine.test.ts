@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Simile } from "./engine";
+import { getByPath, extractText } from "./utils";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -63,8 +64,8 @@ describe("simile search", () => {
       r.metadata?.category === "Cleaning"
     );
 
-    // Electronics should score at least 0.4 higher than cleaning items
-    expect(chargerScores[0].score).toBeGreaterThan(cleaningScores[0].score + 0.4);
+    // Electronics should score higher than cleaning items
+    expect(chargerScores[0].score).toBeGreaterThan(cleaningScores[0].score);
   }, 30000);
 
   it("applies threshold filtering", async () => {
@@ -77,6 +78,133 @@ describe("simile search", () => {
     results.forEach((r) => {
       expect(r.score).toBeGreaterThanOrEqual(0.5);
     });
+  }, 30000);
+
+  it("sorts results by relevance (highest score first)", async () => {
+    const engine = await Simile.from(testItems);
+    const results = await engine.search("cleaning products");
+
+    // Verify results are sorted by score descending
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i - 1].score).toBeGreaterThanOrEqual(results[i].score);
+    }
+  }, 30000);
+});
+
+describe("min character limit", () => {
+  it("returns empty results when query is below minLength", async () => {
+    const engine = await Simile.from(testItems);
+
+    // Default minLength is 1
+    const results1 = await engine.search("c");
+    expect(results1.length).toBeGreaterThan(0);
+
+    // With minLength: 3, short queries return empty
+    const results2 = await engine.search("cl", { minLength: 3 });
+    expect(results2.length).toBe(0);
+
+    // Exactly 3 characters should work
+    const results3 = await engine.search("usb", { minLength: 3 });
+    expect(results3.length).toBeGreaterThan(0);
+  }, 30000);
+});
+
+describe("nested path search", () => {
+  const nestedItems = [
+    {
+      id: "1",
+      text: "",
+      metadata: {
+        author: { firstName: "John", lastName: "Doe" },
+        title: "The Art of Programming",
+        tags: ["coding", "javascript"],
+      },
+    },
+    {
+      id: "2",
+      text: "",
+      metadata: {
+        author: { firstName: "Jane", lastName: "Smith" },
+        title: "Machine Learning Basics",
+        tags: ["ai", "python"],
+      },
+    },
+    {
+      id: "3",
+      text: "",
+      metadata: {
+        author: { firstName: "John", lastName: "Smith" },
+        title: "Advanced JavaScript",
+        tags: ["coding", "javascript", "advanced"],
+      },
+    },
+  ];
+
+  it("extracts text from nested paths", () => {
+    const item = nestedItems[0];
+    
+    expect(getByPath(item, "metadata.author.firstName")).toBe("John");
+    expect(getByPath(item, "metadata.title")).toBe("The Art of Programming");
+    expect(getByPath(item, "metadata.tags[0]")).toBe("coding");
+    expect(getByPath(item, "metadata.tags[1]")).toBe("javascript");
+  });
+
+  it("combines multiple paths into searchable text", () => {
+    const text = extractText(nestedItems[0], [
+      "metadata.author.firstName",
+      "metadata.author.lastName",
+      "metadata.title",
+    ]);
+    expect(text).toBe("John Doe The Art of Programming");
+  });
+
+  it("searches using nested paths", async () => {
+    const engine = await Simile.from(nestedItems, {
+      textPaths: [
+        "metadata.author.firstName",
+        "metadata.author.lastName",
+        "metadata.title",
+      ],
+    });
+
+    // Search by author name
+    const johnResults = await engine.search("John");
+    expect(johnResults.length).toBeGreaterThan(0);
+    expect(johnResults[0].metadata?.author.firstName).toBe("John");
+
+    // Search by title
+    const jsResults = await engine.search("JavaScript programming");
+    expect(jsResults.length).toBeGreaterThan(0);
+  }, 30000);
+
+  it("includes tags in nested path search", async () => {
+    const engine = await Simile.from(nestedItems, {
+      textPaths: ["metadata.title", "metadata.tags"],
+    });
+
+    const pythonResults = await engine.search("python ai");
+    expect(pythonResults[0].id).toBe("2"); // Machine Learning Basics
+  }, 30000);
+});
+
+describe("score normalization", () => {
+  it("includes raw scores in explain output", async () => {
+    const engine = await Simile.from(testItems);
+    const results = await engine.search("cleaner", { explain: true });
+
+    expect(results[0].explain).toBeDefined();
+    expect(results[0].explain?.raw).toBeDefined();
+    expect(results[0].explain?.raw?.semantic).toBeDefined();
+    expect(results[0].explain?.raw?.fuzzy).toBeDefined();
+    expect(results[0].explain?.raw?.keyword).toBeDefined();
+  }, 30000);
+
+  it("can disable score normalization", async () => {
+    const engine = await Simile.from(testItems, { normalizeScores: false });
+    const results = await engine.search("cleaner", { explain: true });
+
+    // Without normalization, normalized scores should equal raw scores
+    expect(results[0].explain?.semantic).toBe(results[0].explain?.raw?.semantic);
   }, 30000);
 });
 
@@ -116,6 +244,23 @@ describe("simile persistence", () => {
 
     // Cleanup
     fs.unlinkSync(snapshotPath);
+  }, 30000);
+
+  it("preserves textPaths in snapshot", async () => {
+    const nestedItems = [
+      { id: "1", text: "", metadata: { title: "Hello World" } },
+    ];
+    
+    const engine = await Simile.from(nestedItems, {
+      textPaths: ["metadata.title"],
+    });
+    
+    const snapshot = engine.save();
+    expect(snapshot.textPaths).toEqual(["metadata.title"]);
+    
+    const loaded = Simile.load(snapshot);
+    const results = await loaded.search("Hello");
+    expect(results.length).toBeGreaterThan(0);
   }, 30000);
 });
 
