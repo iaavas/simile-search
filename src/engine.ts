@@ -5,7 +5,7 @@ import { extractText, normalizeScore } from "./utils.js";
 import { SearchItem, SearchResult, SearchOptions, SimileConfig, SimileSnapshot, HybridWeights } from "./types.js";
 
 
-const PACKAGE_VERSION = "0.3.1";
+const PACKAGE_VERSION = "0.3.2";
 
 export class Simile<T = any> {
   private items: SearchItem<T>[];
