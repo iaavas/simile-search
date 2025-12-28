@@ -3,7 +3,13 @@ import { CacheOptions, CacheStats } from "./cache.js";
 import { QuantizationType } from "./quantization.js";
 import { UpdaterConfig } from "./updater.js";
 
-export { HNSWConfig, CacheOptions, CacheStats, QuantizationType, UpdaterConfig };
+export {
+  HNSWConfig,
+  CacheOptions,
+  CacheStats,
+  QuantizationType,
+  UpdaterConfig,
+};
 
 export interface SearchItem<T = any> {
   id: string;
@@ -41,6 +47,8 @@ export interface SearchOptions {
   useFastSimilarity?: boolean;
   /** Use ANN index if available (default: true) */
   useANN?: boolean;
+  /** Semantic-only search (skip fuzzy/keyword for maximum speed) */
+  semanticOnly?: boolean;
 }
 
 export interface HybridWeights {
@@ -67,8 +75,8 @@ export interface SimileConfig {
   weights?: HybridWeights;
   /** Model to use for embeddings (default: "Xenova/all-MiniLM-L6-v2") */
   model?: string;
-  /** 
-   * Paths to extract searchable text from items. 
+  /**
+   * Paths to extract searchable text from items.
    * Supports nested paths like "author.firstName" or "tags[0]".
    * If not provided, uses the 'text' field directly.
    */
@@ -106,12 +114,14 @@ export interface SimileSnapshot<T = any> {
 // ============ Index Info Types ============
 
 export interface IndexInfo {
-  type: 'linear' | 'hnsw';
+  type: "linear" | "hnsw";
   size: number;
   memory: string;
   annStats?: {
+    size: number;
     levels: number;
     avgConnections: number;
+    memoryBytes: number;
   };
   cacheStats?: CacheStats;
 }

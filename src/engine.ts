@@ -1,23 +1,38 @@
-import { embed, embedBatch, vectorToBase64, base64ToVector } from "./embedder.js";
-import { cosine, fuzzyScore, keywordScore, calculateScoreStats } from "./similarity.js";
+import {
+  embed,
+  embedBatch,
+  vectorToBase64,
+  base64ToVector,
+} from "./embedder.js";
+import {
+  cosine,
+  fuzzyScore,
+  keywordScore,
+  calculateScoreStats,
+} from "./similarity.js";
 import { hybridScore, getDefaultWeights } from "./ranker.js";
 import { extractText, normalizeScore } from "./utils.js";
-import { 
-  SearchItem, 
-  SearchResult, 
-  SearchOptions, 
-  SimileConfig, 
-  SimileSnapshot, 
+import {
+  SearchItem,
+  SearchResult,
+  SearchOptions,
+  SimileConfig,
+  SimileSnapshot,
   HybridWeights,
   QuantizationType,
   CacheStats,
-  IndexInfo
+  IndexInfo,
 } from "./types.js";
 import { VectorCache, createCacheKey } from "./cache.js";
-import { HNSWIndex } from "./ann.js";
+import { HNSWIndex, HNSWConfig } from "./ann.js";
 import { BackgroundUpdater } from "./updater.js";
-import { quantizeVector, dequantizeVector, QuantizedVector, base64ToQuantized, quantizedToBase64 } from "./quantization.js";
-
+import {
+  quantizeVector,
+  dequantizeVector,
+  QuantizedVector,
+  base64ToQuantized,
+  quantizedToBase64,
+} from "./quantization.js";
 
 const PACKAGE_VERSION = "0.4.0";
 
@@ -44,31 +59,44 @@ export class Simile<T = any> {
       textPaths: config.textPaths ?? [],
       normalizeScores: config.normalizeScores ?? true,
       cache: config.cache ?? true,
-      quantization: config.quantization ?? 'float32',
+      quantization: config.quantization ?? "float32",
       useANN: config.useANN ?? false,
       annThreshold: config.annThreshold ?? 1000,
     };
 
     // Initialize Cache
     if (this.config.cache) {
-      this.cache = new VectorCache(typeof this.config.cache === 'object' ? this.config.cache : {});
+      this.cache = new VectorCache(
+        typeof this.config.cache === "object" ? this.config.cache : {}
+      );
     }
 
     // Initialize ANN Index if threshold reached or forced
     if (this.config.useANN || this.items.length >= this.config.annThreshold) {
-      this.buildANNIndex();
+      // Optimize HNSW for speed when not explicitly configured
+      const hnswConfig =
+        typeof this.config.useANN === "object"
+          ? this.config.useANN
+          : {
+              efSearch: 20, // Reduced from default 50 for faster search
+              M: 16, // Keep default
+              efConstruction: 200, // Keep default for build quality
+            };
+      this.buildANNIndex(hnswConfig);
     }
 
     // Initialize Updater
     this.updater = new BackgroundUpdater(this);
   }
 
-  private buildANNIndex(): void {
+  private buildANNIndex(config?: HNSWConfig): void {
     if (this.vectors.length === 0) return;
     const dims = this.vectors[0].length;
-    const hnswConfig = typeof this.config.useANN === 'object' ? this.config.useANN : {};
+    const hnswConfig =
+      config ||
+      (typeof this.config.useANN === "object" ? this.config.useANN : {});
     this.annIndex = new HNSWIndex(dims, hnswConfig);
-    
+
     for (let i = 0; i < this.vectors.length; i++) {
       this.annIndex.add(i, this.vectors[i]);
     }
@@ -78,7 +106,10 @@ export class Simile<T = any> {
    * Extract searchable text from an item using configured paths.
    */
   private getSearchableText(item: SearchItem<T>): string {
-    return extractText(item, this.config.textPaths.length > 0 ? this.config.textPaths : undefined);
+    return extractText(
+      item,
+      this.config.textPaths.length > 0 ? this.config.textPaths : undefined
+    );
   }
 
   /**
@@ -91,14 +122,14 @@ export class Simile<T = any> {
   ): Promise<Simile<T>> {
     const model = config.model ?? "Xenova/all-MiniLM-L6-v2";
     const textPaths = config.textPaths ?? [];
-    
+
     // For initialization, we create a temporary cache to avoid duplicate embeddings
     // even if caching is disabled in config, it's useful during bulk init
     const tempCache = new VectorCache({ maxSize: items.length });
-    const texts = items.map((item) => 
+    const texts = items.map((item) =>
       extractText(item, textPaths.length > 0 ? textPaths : undefined)
     );
-    
+
     const vectors: Float32Array[] = [];
     const textsToEmbed: string[] = [];
     const textToVectorIdx: Map<number, number> = new Map();
@@ -107,7 +138,7 @@ export class Simile<T = any> {
       const text = texts[i];
       const cacheKey = createCacheKey(text, model);
       const cached = tempCache.get(cacheKey);
-      
+
       if (cached) {
         vectors[i] = cached;
       } else {
@@ -124,8 +155,17 @@ export class Simile<T = any> {
         tempCache.set(createCacheKey(textsToEmbed[i], model), newVectors[i]);
       }
     }
-    
-    return new Simile<T>(items, vectors, config);
+
+    const engine = new Simile<T>(items, vectors, config);
+
+    // Warm up the engine's cache with the vectors we just computed
+    if (engine.cache) {
+      for (let i = 0; i < texts.length; i++) {
+        engine.cache.set(createCacheKey(texts[i], model), vectors[i]);
+      }
+    }
+
+    return engine;
   }
 
   /**
@@ -139,11 +179,11 @@ export class Simile<T = any> {
     }
 
     const vector = await embed(text, this.config.model);
-    
+
     if (this.cache) {
       this.cache.set(cacheKey, vector);
     }
-    
+
     return vector;
   }
 
@@ -151,17 +191,16 @@ export class Simile<T = any> {
    * Load a Simile instance from a previously saved snapshot.
    * This is INSTANT - no embedding needed!
    */
-  static load<T>(snapshot: SimileSnapshot<T>, config: SimileConfig = {}): Simile<T> {
+  static load<T>(
+    snapshot: SimileSnapshot<T>,
+    config: SimileConfig = {}
+  ): Simile<T> {
     const vectors = snapshot.vectors.map(base64ToVector);
-    return new Simile<T>(
-      snapshot.items,
-      vectors,
-      { 
-        ...config, 
-        model: snapshot.model,
-        textPaths: snapshot.textPaths ?? config.textPaths ?? [],
-      }
-    );
+    return new Simile<T>(snapshot.items, vectors, {
+      ...config,
+      model: snapshot.model,
+      textPaths: snapshot.textPaths ?? config.textPaths ?? [],
+    });
   }
 
   /**
@@ -183,7 +222,8 @@ export class Simile<T = any> {
       items: this.items,
       vectors: this.vectors.map(vectorToBase64),
       createdAt: new Date().toISOString(),
-      textPaths: this.config.textPaths.length > 0 ? this.config.textPaths : undefined,
+      textPaths:
+        this.config.textPaths.length > 0 ? this.config.textPaths : undefined,
     };
   }
 
@@ -196,7 +236,7 @@ export class Simile<T = any> {
 
   async add(items: SearchItem<T>[]): Promise<void> {
     const texts = items.map((item) => this.getSearchableText(item));
-    
+
     // Use embedBatch with cache optimization
     const newVectors: Float32Array[] = [];
     const textsToEmbed: string[] = [];
@@ -218,7 +258,10 @@ export class Simile<T = any> {
       for (let i = 0; i < embedded.length; i++) {
         const originalIdx = textToIdx.get(i)!;
         newVectors[originalIdx] = embedded[i];
-        this.cache?.set(createCacheKey(textsToEmbed[i], this.config.model), embedded[i]);
+        this.cache?.set(
+          createCacheKey(textsToEmbed[i], this.config.model),
+          embedded[i]
+        );
       }
     }
 
@@ -236,7 +279,7 @@ export class Simile<T = any> {
         this.items.push(item);
         this.vectors.push(newVectors[i]);
         this.itemIndex.set(item.id, newIdx);
-        
+
         // Auto-enable ANN if threshold reached
         if (!this.annIndex && this.items.length >= this.config.annThreshold) {
           this.buildANNIndex();
@@ -260,9 +303,9 @@ export class Simile<T = any> {
   getIndexInfo(): IndexInfo {
     let memoryBytes = 0;
     for (const v of this.vectors) memoryBytes += v.byteLength;
-    
+
     return {
-      type: this.annIndex ? 'hnsw' : 'linear',
+      type: this.annIndex ? "hnsw" : "linear",
       size: this.items.length,
       memory: `${(memoryBytes / 1024 / 1024).toFixed(2)} MB`,
       cacheStats: this.cache?.getStats(),
@@ -288,7 +331,7 @@ export class Simile<T = any> {
     this.items = newItems;
     this.vectors = newVectors;
     this.itemIndex = new Map(this.items.map((item, i) => [item.id, i]));
-    
+
     // Rebuild ANN index if it exists
     if (this.annIndex) {
       this.buildANNIndex();
@@ -326,7 +369,7 @@ export class Simile<T = any> {
 
   /**
    * Search for similar items.
-   * 
+   *
    * @param query - The search query
    * @param options - Search options
    * @returns Sorted results by relevance (highest score first)
@@ -341,6 +384,7 @@ export class Simile<T = any> {
       filter,
       threshold = 0,
       minLength = 1,
+      semanticOnly = false,
     } = options;
 
     // Min character limit - don't search until query meets minimum length
@@ -350,18 +394,44 @@ export class Simile<T = any> {
 
     const qVector = await this.embedWithCache(query);
 
-    // First pass: calculate raw scores
-    const rawResults: Array<{
-      index: number;
-      item: SearchItem<T>;
-      semantic: number;
-      fuzzy: number;
-      keyword: number;
-    }> = [];
-
     // Use ANN if enabled and available
     if (this.annIndex && (options.useANN ?? true)) {
-      const annResults = this.annIndex.search(qVector, topK * 2); // Get more for filtering
+      // Optimize: get fewer candidates for faster search
+      const candidateCount = semanticOnly ? topK : Math.min(topK * 2, 20);
+      const annResults = this.annIndex.search(qVector, candidateCount);
+
+      // Fast path: semantic-only search (no fuzzy/keyword)
+      if (semanticOnly) {
+        const results: SearchResult<T>[] = [];
+
+        for (const res of annResults) {
+          const item = this.items[res.id];
+          if (filter && !filter(item.metadata)) continue;
+
+          const semantic = 1 - res.distance;
+          if (semantic < threshold) continue;
+
+          results.push({
+            id: item.id,
+            text: item.text,
+            metadata: item.metadata,
+            score: semantic,
+            explain: explain ? { semantic, fuzzy: 0, keyword: 0 } : undefined,
+          });
+        }
+
+        return results.sort((a, b) => b.score - a.score).slice(0, topK);
+      }
+
+      // Full hybrid search path
+      const rawResults: Array<{
+        index: number;
+        item: SearchItem<T>;
+        semantic: number;
+        fuzzy: number;
+        keyword: number;
+      }> = [];
+
       for (const res of annResults) {
         const item = this.items[res.id];
         if (filter && !filter(item.metadata)) continue;
@@ -373,8 +443,75 @@ export class Simile<T = any> {
 
         rawResults.push({ index: res.id, item, semantic, fuzzy, keyword });
       }
+
+      // Calculate score statistics for normalization
+      const stats = calculateScoreStats(rawResults);
+
+      // Second pass: normalize scores and compute hybrid score
+      const results: SearchResult<T>[] = [];
+
+      for (const raw of rawResults) {
+        let semantic = raw.semantic;
+        let fuzzy = raw.fuzzy;
+        let keyword = raw.keyword;
+
+        // Normalize scores if enabled
+        if (this.config.normalizeScores) {
+          semantic = normalizeScore(
+            raw.semantic,
+            stats.semantic.min,
+            stats.semantic.max
+          );
+          fuzzy = normalizeScore(raw.fuzzy, stats.fuzzy.min, stats.fuzzy.max);
+          keyword = normalizeScore(
+            raw.keyword,
+            stats.keyword.min,
+            stats.keyword.max
+          );
+        }
+
+        const score = hybridScore(
+          semantic,
+          fuzzy,
+          keyword,
+          this.config.weights
+        );
+
+        // Apply threshold filter
+        if (score < threshold) continue;
+
+        results.push({
+          id: raw.item.id,
+          text: raw.item.text,
+          metadata: raw.item.metadata,
+          score,
+          explain: explain
+            ? {
+                semantic,
+                fuzzy,
+                keyword,
+                raw: {
+                  semantic: raw.semantic,
+                  fuzzy: raw.fuzzy,
+                  keyword: raw.keyword,
+                },
+              }
+            : undefined,
+        });
+      }
+
+      // Sort by relevance (highest score first)
+      return results.sort((a, b) => b.score - a.score).slice(0, topK);
     } else {
       // Fallback to linear scan
+      const rawResults: Array<{
+        index: number;
+        item: SearchItem<T>;
+        semantic: number;
+        fuzzy: number;
+        keyword: number;
+      }> = [];
+
       for (let i = 0; i < this.items.length; i++) {
         const item = this.items[i];
 
@@ -387,52 +524,65 @@ export class Simile<T = any> {
 
         rawResults.push({ index: i, item, semantic, fuzzy, keyword });
       }
-    }
 
-    // Calculate score statistics for normalization
-    const stats = calculateScoreStats(rawResults);
+      // Calculate score statistics for normalization
+      const stats = calculateScoreStats(rawResults);
 
-    // Second pass: normalize scores and compute hybrid score
-    const results: SearchResult<T>[] = [];
+      // Second pass: normalize scores and compute hybrid score
+      const results: SearchResult<T>[] = [];
 
-    for (const raw of rawResults) {
-      let semantic = raw.semantic;
-      let fuzzy = raw.fuzzy;
-      let keyword = raw.keyword;
+      for (const raw of rawResults) {
+        let semantic = raw.semantic;
+        let fuzzy = raw.fuzzy;
+        let keyword = raw.keyword;
 
-      // Normalize scores if enabled
-      if (this.config.normalizeScores) {
-        semantic = normalizeScore(raw.semantic, stats.semantic.min, stats.semantic.max);
-        fuzzy = normalizeScore(raw.fuzzy, stats.fuzzy.min, stats.fuzzy.max);
-        keyword = normalizeScore(raw.keyword, stats.keyword.min, stats.keyword.max);
+        // Normalize scores if enabled
+        if (this.config.normalizeScores) {
+          semantic = normalizeScore(
+            raw.semantic,
+            stats.semantic.min,
+            stats.semantic.max
+          );
+          fuzzy = normalizeScore(raw.fuzzy, stats.fuzzy.min, stats.fuzzy.max);
+          keyword = normalizeScore(
+            raw.keyword,
+            stats.keyword.min,
+            stats.keyword.max
+          );
+        }
+
+        const score = hybridScore(
+          semantic,
+          fuzzy,
+          keyword,
+          this.config.weights
+        );
+
+        // Apply threshold filter
+        if (score < threshold) continue;
+
+        results.push({
+          id: raw.item.id,
+          text: raw.item.text,
+          metadata: raw.item.metadata,
+          score,
+          explain: explain
+            ? {
+                semantic,
+                fuzzy,
+                keyword,
+                raw: {
+                  semantic: raw.semantic,
+                  fuzzy: raw.fuzzy,
+                  keyword: raw.keyword,
+                },
+              }
+            : undefined,
+        });
       }
 
-      const score = hybridScore(semantic, fuzzy, keyword, this.config.weights);
-
-      // Apply threshold filter
-      if (score < threshold) continue;
-
-      results.push({
-        id: raw.item.id,
-        text: raw.item.text,
-        metadata: raw.item.metadata,
-        score,
-        explain: explain
-          ? {
-              semantic,
-              fuzzy,
-              keyword,
-              raw: {
-                semantic: raw.semantic,
-                fuzzy: raw.fuzzy,
-                keyword: raw.keyword,
-              },
-            }
-          : undefined,
-      });
+      // Sort by relevance (highest score first)
+      return results.sort((a, b) => b.score - a.score).slice(0, topK);
     }
-
-    // Sort by relevance (highest score first)
-    return results.sort((a, b) => b.score - a.score).slice(0, topK);
   }
 }
